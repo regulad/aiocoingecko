@@ -1,477 +1,397 @@
 import json
+from typing import Union
 
-import requests
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
+from aiohttp import ClientSession
 
-from .utils import func_args_preprocessing
+from .errors import *
 
 
 class AsyncCoinGeckoAPISession:
-    __API_URL_BASE = 'https://api.coingecko.com/api/v3/'
+    _API_URL_BASE = 'https://api.coingecko.com/api/v3/'
 
-    def __init__(self, api_base_url=__API_URL_BASE):
+    def __init__(self, api_base_url: str = _API_URL_BASE, *, client_session: ClientSession = None) -> None:
         self.api_base_url = api_base_url
-        self.request_timeout = 120
 
-        self.session = requests.Session()
-        retries = Retry(total=5, backoff_factor=0.5, status_forcelist=[502, 503, 504])
-        self.session.mount('http://', HTTPAdapter(max_retries=retries))
+        self._client_session = client_session
+        self._client_session_is_passed = self._client_session is not None
 
-    def __request(self, url):
-        # print(url)
-        try:
-            response = self.session.get(url, timeout=self.request_timeout)
-        except requests.exceptions.RequestException:
-            raise
+    async def __aenter__(self):
+        if not self._client_session_is_passed:
+            self._client_session = ClientSession()
+        return self
 
-        try:
-            response.raise_for_status()
-            content = json.loads(response.content.decode('utf-8'))
-            return content
-        except Exception as e:
-            # check if json (with error message) is returned
-            try:
-                content = json.loads(response.content.decode('utf-8'))
-                raise ValueError(content)
-            # if no json
-            except json.decoder.JSONDecodeError:
-                pass
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if not self._client_session_is_passed:
+            await self._client_session.close()
 
-            raise
+    async def request(self, route: str, **kwargs):
+        """Used to make interaction with the CoinGecko API.
 
-    def __api_url_params(self, api_url, params, api_url_has_params=False):
-        if params:
-            # if api_url contains already params and there is already a '?' avoid
-            # adding second '?' (api_url += '&' if '?' in api_url else '?'); causes
-            # issues with request parametes (usually for endpoints with required
-            # arguments passed as parameters)
-            api_url += '&' if api_url_has_params else '?'
-            for key, value in params.items():
-                if type(value) == bool:
-                    value = str(value).lower()
+        :argument route The route to make the GET request on.
+        :argument kwargs Query parameters to use during the request."""
 
-                api_url += "{0}={1}&".format(key, value)
-            api_url = api_url[:-1]
-        return api_url
+        async with self._client_session.get(self.api_base_url + route, params=kwargs) as response:
+            if response.ok:
+                try:
+                    return await response.json()
+                except json.decoder.JSONDecodeError:
+                    raise UnknownResponse(resp=response)
+            elif response.status == 429:
+                raise RatelimitException(response.reason)
+            else:
+                raise HTTPException(response.reason, status_code=response.status)
 
-    # ---------- PING ----------#
-    def ping(self):
+    # ping
+    async def ping(self) -> str:
         """Check API server status"""
 
-        api_url = '{0}ping'.format(self.api_base_url)
-        return self.__request(api_url)
+        return await self.request("ping")
 
-    # ---------- SIMPLE ----------#
-    @func_args_preprocessing
-    def get_price(self, ids, vs_currencies, **kwargs):
-        """Get the current price of any cryptocurrencies in any other supported currencies that you need"""
+    # simple
+    async def get_price(self, ids: str, vs_currencies: str, **kwargs) -> dict:
+        """Get the current price of any cryptocurrencies in any other supported currencies that you need.
 
-        ids = ids.replace(' ', '')
-        kwargs['ids'] = ids
-        vs_currencies = vs_currencies.replace(' ', '')
-        kwargs['vs_currencies'] = vs_currencies
+        :argument ids id of coins, comma-separated if querying more than 1 coin
+        :argument vs_currencies vs_currency of coins, comma-separated if querying more than 1 vs_currency"""
 
-        api_url = '{0}simple/price'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        kwargs['ids'] = ids.replace(' ', '')
+        kwargs['vs_currencies'] = vs_currencies.replace(' ', '')
 
-        return self.__request(api_url)
+        return await self.request("simple/price", **kwargs)
 
-    @func_args_preprocessing
-    def get_token_price(self, id, contract_addresses, vs_currencies, **kwargs):
-        """Get the current price of any tokens on this coin (ETH only at this stage as per api docs) in any other supported currencies that you need"""
+    async def get_token_price(self, token_id: str, contract_addresses: str, vs_currencies: str, **kwargs) -> dict:
+        """Get current price of tokens (using contract addresses)
+        for a given platform in any other currency that you need.
 
-        contract_addresses = contract_addresses.replace(' ', '')
-        kwargs['contract_addresses'] = contract_addresses
-        vs_currencies = vs_currencies.replace(' ', '')
-        kwargs['vs_currencies'] = vs_currencies
+        :argument token_id The id of the platform issuing tokens (See asset_platforms endpoint for list of options)
+        :argument contact_addresses The contract address of tokens, comma separated"""
 
-        api_url = '{0}simple/token_price/{1}'.format(self.api_base_url, id)
-        api_url = self.__api_url_params(api_url, kwargs)
-        return self.__request(api_url)
+        kwargs['contract_addresses'] = contract_addresses.replace(' ', '')
+        kwargs['vs_currencies'] = vs_currencies.replace(' ', '')
 
-    @func_args_preprocessing
-    def get_supported_vs_currencies(self, **kwargs):
-        """Get list of supported_vs_currencies"""
+        return await self.request(f"simple/token_price/{token_id}", **kwargs)
 
-        api_url = '{0}simple/supported_vs_currencies'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+    async def get_supported_vs_currencies(self, **kwargs) -> dict:
+        """Get list of supported_vs_currencies."""
 
-        return self.__request(api_url)
+        return await self.request("simple/supported_vs_currencies", **kwargs)
 
-    # ---------- COINS ----------#
-    @func_args_preprocessing
-    def get_coins(self, **kwargs):
-        """List all coins with data (name, price, market, developer, community, etc)"""
-
-        api_url = '{0}coins'.format(self.api_base_url)
-        # ['order', 'per_page', 'page', 'localization']
-        api_url = self.__api_url_params(api_url, kwargs)
-
-        return self.__request(api_url)
-
-    @func_args_preprocessing
-    def get_coins_list(self, **kwargs):
+    # coins
+    async def get_coins_list(self, **kwargs) -> dict:
         """List all supported coins id, name and symbol (no pagination required)"""
 
-        api_url = '{0}coins/list'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("coins/list", **kwargs)
 
-        return self.__request(api_url)
+    async def get_coins_markets(self, vs_currency: str, **kwargs) -> dict:
+        """List all supported coins price, market cap, volume, and market related data
 
-    @func_args_preprocessing
-    def get_coins_markets(self, vs_currency, **kwargs):
-        """List all supported coins price, market cap, volume, and market related data"""
+        :argument vs_currency The target currency of market data (usd, eur, jpy, etc.)"""
 
         kwargs['vs_currency'] = vs_currency
 
-        api_url = '{0}coins/markets'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("coins/markets", **kwargs)
 
-        return self.__request(api_url)
+    async def get_coin_by_id(self, coin_id: str, **kwargs) -> dict:
+        """Get current data (name, price, market, ... including exchange tickers) for a coin
 
-    @func_args_preprocessing
-    def get_coin_by_id(self, id, **kwargs):
-        """Get current data (name, price, market, ... including exchange tickers) for a coin"""
+        :argument coin_id pass the coin id (can be obtained from /coins) eg. bitcoin"""
 
-        api_url = '{0}coins/{1}/'.format(self.api_base_url, id)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request(f"coins/{coin_id}/", **kwargs)
 
-        return self.__request(api_url)
+    async def get_coin_ticker_by_id(self, coin_id: str, **kwargs) -> dict:
+        """Get coin tickers (paginated to 100 items)
 
-    @func_args_preprocessing
-    def get_coin_ticker_by_id(self, id, **kwargs):
-        """Get coin tickers (paginated to 100 items)"""
+        :argument coin_id pass the coin id (can be obtained from /coins/list) eg. bitcoin"""
 
-        api_url = '{0}coins/{1}/tickers'.format(self.api_base_url, id)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request(f"coins/{coin_id}/tickers", **kwargs)
 
-        return self.__request(api_url)
+    async def get_coin_history_by_id(self, coin_id: str, date: str, **kwargs) -> dict:
+        """Get historical data (name, price, market, stats) at a given date for a coin
 
-    @func_args_preprocessing
-    def get_coin_history_by_id(self, id, date, **kwargs):
-        """Get historical data (name, price, market, stats) at a given date for a coin"""
+        :argument coin_id pass the coin id (can be obtained from /coins) eg. bitcoin
+        :argument date The date of data snapshot in dd-mm-yyyy eg. 30-12-2017"""
 
         kwargs['date'] = date
 
-        api_url = '{0}coins/{1}/history'.format(self.api_base_url, id)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request(f"coins/{coin_id}/history", **kwargs)
 
-        return self.__request(api_url)
+    async def get_coin_market_chart_by_id(
+            self,
+            coin_id: str,
+            vs_currency: str,
+            days: Union[int, str],
+            **kwargs,
+    ) -> dict:
+        """Get historical market data include price, market cap, and 24h volume (granularity auto)
 
-    @func_args_preprocessing
-    def get_coin_market_chart_by_id(self, id, vs_currency, days, **kwargs):
-        """Get historical market data include price, market cap, and 24h volume (granularity auto)"""
+        :argument coin_id pass the coin id (can be obtained from /coins) eg. bitcoin
+        :argument vs_currency The target currency of market data (usd, eur, jpy, etc.)
+        :argument days Data up to number of days ago (eg. 1,14,30,max)"""
 
-        api_url = '{0}coins/{1}/market_chart?vs_currency={2}&days={3}'.format(self.api_base_url, id, vs_currency, days)
-        api_url = self.__api_url_params(api_url, kwargs, api_url_has_params=True)
+        kwargs["vs_currency"] = vs_currency
+        kwargs["days"] = days
 
-        return self.__request(api_url)
+        return await self.request(f"coins/{coin_id}/market_chart", **kwargs)
 
-    @func_args_preprocessing
-    def get_coin_market_chart_range_by_id(self, id, vs_currency, from_timestamp, to_timestamp, **kwargs):
-        """Get historical market data include price, market cap, and 24h volume within a range of timestamp (granularity auto)"""
+    async def get_coin_market_chart_range_by_id(
+            self,
+            coin_id: str,
+            vs_currency: str,
+            from_timestamp: int,
+            to_timestamp: int,
+            **kwargs,
+    ) -> dict:
+        """Get historical market data include price, market cap, and 24h volume within a range of timestamp
+        (granularity auto)
 
-        api_url = '{0}coins/{1}/market_chart/range?vs_currency={2}&from={3}&to={4}'.format(self.api_base_url, id,
-                                                                                           vs_currency, from_timestamp,
-                                                                                           to_timestamp)
-        api_url = self.__api_url_params(api_url, kwargs, api_url_has_params=True)
+        :argument coin_id pass the coin id (can be obtained from /coins) eg. bitcoin
+        :argument vs_currency The target currency of market data (usd, eur, jpy, etc.)
+        :argument from_timestamp From date in UNIX Timestamp (eg. 1392577232)
+        :argument to_timestamp To date in UNIX Timestamp (eg. 1422577232)"""
 
-        return self.__request(api_url)
+        kwargs["vs_currency"] = vs_currency
+        kwargs["from"] = from_timestamp
+        kwargs["to"] = to_timestamp
 
-    @func_args_preprocessing
-    def get_coin_status_updates_by_id(self, id, **kwargs):
-        """Get status updates for a given coin"""
+        return await self.request(f"coins/{coin_id}/market_chart/range", **kwargs)
 
-        api_url = '{0}coins/{1}/status_updates'.format(self.api_base_url, id)
-        api_url = self.__api_url_params(api_url, kwargs)
+    async def get_coin_status_updates_by_id(self, coin_id: str, **kwargs) -> dict:
+        """Get status updates for a given coin
 
-        return self.__request(api_url)
+        :argument pass the coin id (can be obtained from /coins) eg. bitcoin"""
 
-    @func_args_preprocessing
-    def get_coin_ohlc_by_id(self, id, vs_currency, days, **kwargs):
-        """Get coin's OHLC"""
+        return await self.request(f"coins/{coin_id}/status_updates", **kwargs)
 
-        api_url = '{0}coins/{1}/ohlc?vs_currency={2}&days={3}'.format(self.api_base_url, id, vs_currency, days)
-        api_url = self.__api_url_params(api_url, kwargs, api_url_has_params=True)
+    async def get_coin_ohlc_by_id(self, coin_id: str, vs_currency: str, days: Union[int, str], **kwargs) -> list:
+        """Get coin's OHLC
 
-        return self.__request(api_url)
+        :argument coin_id pass the coin id (can be obtained from /coins/list) eg. bitcoin
+        :argument vs_currency The target currency of market data (usd, eur, jpy, etc.)
+        :argument days Data up to number of days ago (1/7/14/30/90/180/365/max)"""
 
-    # ---------- Contract ----------#
-    @func_args_preprocessing
-    def get_coin_info_from_contract_address_by_id(self, id, contract_address, **kwargs):
-        """Get coin info from contract address"""
+        kwargs["vs_currency"] = vs_currency
+        kwargs["days"] = days
 
-        api_url = '{0}coins/{1}/contract/{2}'.format(self.api_base_url, id, contract_address)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request(f"coins/{coin_id}/ohlc", **kwargs)
 
-        return self.__request(api_url)
+    # contract
+    async def get_coin_info_from_contract_address_by_id(self, platform_id: str, contract_address: str, **kwargs) -> dict:
+        """Get coin info from contract address
 
-    @func_args_preprocessing
-    def get_coin_market_chart_from_contract_address_by_id(self, id, contract_address, vs_currency, days, **kwargs):
-        """Get historical market data include price, market cap, and 24h volume (granularity auto) from a contract address"""
+        :argument platform_id Asset platform (See asset_platforms endpoint for list of options)
+        :argument contract_address Token’s contract address"""
 
-        api_url = '{0}coins/{1}/contract/{2}/market_chart/?vs_currency={3}&days={4}'.format(self.api_base_url, id,
-                                                                                            contract_address,
-                                                                                            vs_currency, days)
-        api_url = self.__api_url_params(api_url, kwargs, api_url_has_params=True)
+        return await self.request(f"coins/{platform_id}/contract/{contract_address}", **kwargs)
 
-        return self.__request(api_url)
+    async def get_coin_market_chart_from_contract_address_by_id(
+            self,
+            platform_id: str,
+            contract_address: str,
+            vs_currency: str,
+            days: Union[str, int],
+            **kwargs,
+    ) -> dict:
+        """Get historical market data include price, market cap,
+        and 24h volume (granularity auto) from a contract address
 
-    @func_args_preprocessing
-    def get_coin_market_chart_range_from_contract_address_by_id(self, id, contract_address, vs_currency, from_timestamp,
-                                                                to_timestamp, **kwargs):
-        """Get historical market data include price, market cap, and 24h volume within a range of timestamp (granularity auto) from a contract address"""
+        :argument platform_id The id of the platform issuing tokens (See asset_platforms endpoint for list of options)
+        :argument contract_address Token’s contract address
+        :argument vs_currency The target currency of market data (usd, eur, jpy, etc.)
+        :days Data up to number of days ago (eg. 1,14,30,max)"""
 
-        api_url = '{0}coins/{1}/contract/{2}/market_chart/range?vs_currency={3}&from={4}&to={5}'.format(
-            self.api_base_url, id, contract_address, vs_currency, from_timestamp, to_timestamp)
-        api_url = self.__api_url_params(api_url, kwargs)
+        kwargs["vs_currency"] = vs_currency
+        kwargs["days"] = days
 
-        return self.__request(api_url)
+        return await self.request(f"coins/{platform_id}/contract/{contract_address}/market_chart/", **kwargs)
 
-    # ---------- ASSET PLATFORMS ----------#
-    @func_args_preprocessing
-    def get_asset_platforms(self, **kwargs):
+    async def get_coin_market_chart_range_from_contract_address_by_id(
+            self,
+            platform_id: str,
+            contract_address: str,
+            vs_currency: str,
+            from_timestamp: int,
+            to_timestamp: int,
+            **kwargs,
+    ) -> dict:
+        """Get historical market data include price, market cap,
+        and 24h volume within a range of timestamp (granularity auto) from a contract address
+
+        :argument platform_id The id of the platform issuing tokens (See asset_platforms endpoint for list of options)
+        :argument contract_address Token’s contract address
+        :argument vs_currency The target currency of market data (usd, eur, jpy, etc.)
+        :argument from_timestamp From date in UNIX Timestamp (eg. 1392577232)
+        :argument to_timestamp To date in UNIX Timestamp (eg. 1422577232)"""
+
+        kwargs["vs_currency"] = vs_currency
+        kwargs["from"] = from_timestamp
+        kwargs["to"] = to_timestamp
+
+        return await self.request(f"coins/{platform_id}/contract/{contract_address}/market_chart/range", **kwargs)
+
+    # asset_platforms
+    async def get_asset_platforms(self, **kwargs) -> dict:
         """List all asset platforms (Blockchain networks)"""
 
-        api_url = '{0}asset_platforms'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("asset_platforms", **kwargs)
 
-        return self.__request(api_url)
-
-    # ---------- CATEGORIES ----------#
-    @func_args_preprocessing
-    def get_coins_categories_list(self, **kwargs):
+    # categories
+    async def get_coins_categories_list(self, **kwargs) -> dict:
         """List all categories"""
 
-        api_url = '{0}coins/categories/list'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("coins/categories/list", **kwargs)
 
-        return self.__request(api_url)
-
-    @func_args_preprocessing
-    def get_coins_categories(self, **kwargs):
+    async def get_coins_categories(self, **kwargs) -> dict:
         """List all categories with market data"""
 
-        api_url = '{0}coins/categories'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("coins/categories", **kwargs)
 
-        return self.__request(api_url)
-
-    # ---------- EXCHANGES ----------#
-    @func_args_preprocessing
-    def get_exchanges_list(self, **kwargs):
+    # exchanges
+    async def get_exchanges_list(self, **kwargs) -> dict:
         """List all exchanges"""
 
-        api_url = '{0}exchanges'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("exchanges", **kwargs)
 
-        return self.__request(api_url)
+    async def get_exchanges_id_name_list(self, **kwargs) -> dict:
+        """List all supported markets token_id and name (no pagination required)"""
 
-    @func_args_preprocessing
-    def get_exchanges_id_name_list(self, **kwargs):
-        """List all supported markets id and name (no pagination required)"""
+        return await self.request("exchanges/list", **kwargs)
 
-        api_url = '{0}exchanges/list'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+    async def get_exchanges_by_id(self, exchange_id: str, **kwargs) -> dict:
+        """Get exchange volume in BTC and tickers
 
-        return self.__request(api_url)
+        :argument exchange_id pass the exchange id (can be obtained from /exchanges/list) eg. binance"""
 
-    @func_args_preprocessing
-    def get_exchanges_by_id(self, id, **kwargs):
-        """Get exchange volume in BTC and tickers"""
+        return await self.request(f"exchanges/{exchange_id}", **kwargs)
 
-        api_url = '{0}exchanges/{1}'.format(self.api_base_url, id)
-        api_url = self.__api_url_params(api_url, kwargs)
+    async def get_exchanges_tickers_by_id(self, exchange_id: str, **kwargs) -> dict:
+        """Get exchange tickers (paginated, 100 tickers per page)
 
-        return self.__request(api_url)
+        :argument exchange_id pass the exchange id (can be obtained from /exchanges/list) eg. binance"""
 
-    @func_args_preprocessing
-    def get_exchanges_tickers_by_id(self, id, **kwargs):
-        """Get exchange tickers (paginated, 100 tickers per page)"""
+        return await self.request(f"exchanges/{exchange_id}/tickers", **kwargs)
 
-        api_url = '{0}exchanges/{1}/tickers'.format(self.api_base_url, id)
-        api_url = self.__api_url_params(api_url, kwargs)
+    async def get_exchanges_status_updates_by_id(self, exchange_id: str, **kwargs) -> dict:
+        """Get status updates for a given exchange
 
-        return self.__request(api_url)
+        :argument exchange_id pass the exchange id (can be obtained from /exchanges/list) eg. binance"""
 
-    @func_args_preprocessing
-    def get_exchanges_status_updates_by_id(self, id, **kwargs):
-        """Get status updates for a given exchange"""
+        return await self.request(f"exchanges/{exchange_id}/status_updates", **kwargs)
 
-        api_url = '{0}exchanges/{1}/status_updates'.format(self.api_base_url, id)
-        api_url = self.__api_url_params(api_url, kwargs)
+    async def get_exchanges_volume_chart_by_id(self, exchange_id: str, days: int, **kwargs) -> dict:
+        """Get volume chart data for a given exchange
 
-        return self.__request(api_url)
-
-    @func_args_preprocessing
-    def get_exchanges_volume_chart_by_id(self, id, days, **kwargs):
-        """Get volume chart data for a given exchange"""
+        :argument exchange_id pass the exchange id (can be obtained from /exchanges/list) eg. binance"""
 
         kwargs['days'] = days
 
-        api_url = '{0}exchanges/{1}/volume_chart'.format(self.api_base_url, id)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request(f"exchanges/{exchange_id}/volume_chart", **kwargs)
 
-        return self.__request(api_url)
+    # finance
+    async def get_finance_platforms(self, **kwargs) -> dict:
+        """List all finance platforms"""
 
-    # ---------- FINANCE ----------#
-    @func_args_preprocessing
-    def get_finance_platforms(self, **kwargs):
-        """Get cryptocurrency finance platforms data"""
+        return await self.request("finance_platforms", **kwargs)
 
-        api_url = '{0}finance_platforms'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+    async def get_finance_products(self, **kwargs) -> dict:
+        """List all finance products"""
 
-        return self.__request(api_url)
+        return await self.request("finance_products", **kwargs)
 
-    @func_args_preprocessing
-    def get_finance_products(self, **kwargs):
-        """Get cryptocurrency finance products data"""
-
-        api_url = '{0}finance_products'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
-
-        return self.__request(api_url)
-
-    # ---------- INDEXES ----------#
-    @func_args_preprocessing
-    def get_indexes(self, **kwargs):
+    # indexes
+    async def get_indexes(self, **kwargs) -> dict:
         """List all market indexes"""
 
-        api_url = '{0}indexes'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("indexes", **kwargs)
 
-        return self.__request(api_url)
+    async def get_indexes_market_id_index_id(self, market_id: str, index_id: str, **kwargs):
+        """get market index by market id and index id
 
-    # @func_args_preprocessing
-    # def get_indexes_by_id(self, id, **kwargs):
-    #    """Get market index by id"""
+        :argument market_id pass the market id (can be obtained from /exchanges/list)
+        :argument index_id pass the index id (can be obtained from /indexes/list)"""
 
-    #    api_url = '{0}indexes/{1}'.format(self.api_base_url, id)
-    #    api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request(f"indexes/{market_id}/{index_id}", **kwargs)
 
-    #    return self.__request(api_url)
+    async def get_indexes_list(self, **kwargs) -> dict:
+        """list market indexes id and name"""
 
-    @func_args_preprocessing
-    def get_indexes_list(self, **kwargs):
-        """List market indexes id and name"""
+        return await self.request("indexes/list", **kwargs)
 
-        api_url = '{0}indexes/list'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
-
-        return self.__request(api_url)
-
-    # ---------- DERIVATIVES ----------#
-    @func_args_preprocessing
-    def get_derivatives(self, **kwargs):
+    # derivatives
+    async def get_derivatives(self, **kwargs) -> dict:
         """List all derivative tickers"""
 
-        api_url = '{0}derivatives'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("derivatives", **kwargs)
 
-        return self.__request(api_url)
+    async def get_derivatives_exchanges(self, **kwargs) -> dict:
+        """List all derivative exchanges"""
 
-    @func_args_preprocessing
-    def get_derivatives_exchanges(self, **kwargs):
-        """List all derivative tickers"""
+        return await self.request("derivatives/exchanges", **kwargs)
 
-        api_url = '{0}derivatives/exchanges'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+    async def get_derivatives_exchanges_by_id(self, derivative_id: str, **kwargs) -> dict:
+        """show derivative exchange data
 
-        return self.__request(api_url)
+        :argument derivative_id pass the exchange id (can be obtained from derivatives/exchanges/list) eg. bitmex"""
 
-    @func_args_preprocessing
-    def get_derivatives_exchanges_by_id(self, id, **kwargs):
-        """List all derivative tickers"""
+        return await self.request(f"derivatives/exchanges/{derivative_id}", **kwargs)
 
-        api_url = '{0}derivatives/exchanges/{1}'.format(self.api_base_url, id)
-        api_url = self.__api_url_params(api_url, kwargs)
+    async def get_derivatives_exchanges_list(self, **kwargs) -> dict:
+        """List all derivative exchanges name and identifier"""
 
-        return self.__request(api_url)
+        return await self.request("derivatives/exchanges/list", **kwargs)
 
-    @func_args_preprocessing
-    def get_derivatives_exchanges_list(self, **kwargs):
-        """List all derivative tickers"""
-
-        api_url = '{0}derivatives/exchanges/list'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
-
-        return self.__request(api_url)
-
-    # ---------- STATUS UPDATES ----------#
-    @func_args_preprocessing
-    def get_status_updates(self, **kwargs):
+    # status_updates
+    async def get_status_updates(self, **kwargs) -> dict:
         """List all status_updates with data (description, category, created_at, user, user_title and pin)"""
 
-        api_url = '{0}status_updates'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("status_updates", **kwargs)
 
-        return self.__request(api_url)
-
-    # ---------- EVENTS ----------#
-    @func_args_preprocessing
-    def get_events(self, **kwargs):
+    # events
+    async def get_events(self, **kwargs) -> dict:
         """Get events, paginated by 100"""
 
-        api_url = '{0}events'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("events", **kwargs)
 
-        return self.__request(api_url)
-
-    @func_args_preprocessing
-    def get_events_countries(self, **kwargs):
+    async def get_events_countries(self, **kwargs) -> dict:
         """Get list of event countries"""
 
-        api_url = '{0}events/countries'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("events/countries", **kwargs)
 
-        return self.__request(api_url)
-
-    @func_args_preprocessing
-    def get_events_types(self, **kwargs):
+    async def get_events_types(self, **kwargs) -> dict:
         """Get list of event types"""
 
-        api_url = '{0}events/types'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("events/types", **kwargs)
 
-        return self.__request(api_url)
-
-    # ---------- EXCHANGE-RATES ----------#
-    @func_args_preprocessing
-    def get_exchange_rates(self, **kwargs):
+    # exchange_rates
+    async def get_exchange_rates(self, **kwargs) -> dict:
         """Get BTC-to-Currency exchange rates"""
 
-        api_url = '{0}exchange_rates'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("exchange_rates", **kwargs)
 
-        return self.__request(api_url)
+    # trending
+    async def get_search_trending(self, **kwargs) -> dict:
+        """Top-7 trending coins on CoinGecko as searched by users in the last 24 hours
+        (Ordered by most popular first)"""
 
-    # ---------- TRENDING ----------#
-    @func_args_preprocessing
-    def get_search_trending(self, **kwargs):
-        """Get top 7 trending coin searches"""
+        return await self.request("search/trending", **kwargs)
 
-        api_url = '{0}search/trending'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
-
-        return self.__request(api_url)
-
-    # ---------- GLOBAL ----------#
-    @func_args_preprocessing
-    def get_global(self, **kwargs):
+    # global
+    async def get_global(self, **kwargs) -> dict:
         """Get cryptocurrency global data"""
 
-        api_url = '{0}global'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("global", **kwargs)
 
-        return self.__request(api_url)['data']
-
-    @func_args_preprocessing
-    def get_global_decentralized_finance_defi(self, **kwargs):
+    async def get_global_decentralized_finance_defi(self, **kwargs) -> dict:
         """Get cryptocurrency global decentralized finance(defi) data"""
 
-        api_url = '{0}global/decentralized_finance_defi'.format(self.api_base_url)
-        api_url = self.__api_url_params(api_url, kwargs)
+        return await self.request("global/decentralized_finance_defi", **kwargs)
 
-        return self.__request(api_url)['data']
+    # companies (beta)
+    async def get_companies_coin_treasuries(self, coin_id: str, **kwargs):
+        """Get public companies bitcoin or ethereum holdings (Ordered by total holdings descending)
+
+        :argument coin_id bitcoin or ethereum"""
+
+        return await self.request(f"companies/public_treasury/{coin_id}", **kwargs)
+
+
+__all__ = ["AsyncCoinGeckoAPISession"]
