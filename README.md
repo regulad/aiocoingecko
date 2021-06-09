@@ -10,13 +10,7 @@ Features 100% API implementation and full Pythonic documentation.
 
 PyPI
 ```bash
-pip install pycoingecko
-```
-or from source
-```bash
-git clone https://github.com/man-c/pycoingecko.git
-cd pycoingecko
-python3 setup.py install
+pip install aiocoingecko
 ```
 
 ### Usage
