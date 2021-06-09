@@ -1,4 +1,4 @@
-# CoinGecko API wrapper
+# Asynchronous CoinGecko API wrapper
 [![PyPi Version](https://img.shields.io/pypi/v/pycoingecko.svg)](https://pypi.python.org/pypi/pycoingecko/)
 ![GitHub](https://img.shields.io/github/license/man-c/pycoingecko)
 
@@ -19,8 +19,9 @@ python3 setup.py install
 ### Usage
 
 ```python
-from pycoingecko import CoinGeckoAPI
-cg = CoinGeckoAPI()
+from aiocoingecko import AsyncCoinGeckoAPISession
+
+cg = AsyncCoinGeckoAPISession()
 ```
 
 ### Examples

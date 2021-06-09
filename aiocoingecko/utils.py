@@ -2,7 +2,6 @@ def func_args_preprocessing(func):
     """Return function that converts list input arguments to comma-separated strings"""
 
     def input_args(*args, **kwargs):
-
         # check in **kwargs for lists and booleans
         for v in kwargs:
             kwargs[v] = arg_preprocessing(kwargs[v])
@@ -35,4 +34,3 @@ def get_comma_separated_values(values):
         values = [values]
 
     return ','.join(values)
-

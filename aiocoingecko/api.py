@@ -1,13 +1,13 @@
 import json
-import requests
 
+import requests
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 
 from .utils import func_args_preprocessing
 
 
-class CoinGeckoAPI:
+class AsyncCoinGeckoAPISession:
     __API_URL_BASE = 'https://api.coingecko.com/api/v3/'
 
     def __init__(self, api_base_url=__API_URL_BASE):
@@ -187,7 +187,7 @@ class CoinGeckoAPI:
         api_url = self.__api_url_params(api_url, kwargs)
 
         return self.__request(api_url)
-    
+
     @func_args_preprocessing
     def get_coin_ohlc_by_id(self, id, vs_currency, days, **kwargs):
         """Get coin's OHLC"""
@@ -344,8 +344,8 @@ class CoinGeckoAPI:
 
         return self.__request(api_url)
 
-    #@func_args_preprocessing
-    #def get_indexes_by_id(self, id, **kwargs):
+    # @func_args_preprocessing
+    # def get_indexes_by_id(self, id, **kwargs):
     #    """Get market index by id"""
 
     #    api_url = '{0}indexes/{1}'.format(self.api_base_url, id)
@@ -446,7 +446,7 @@ class CoinGeckoAPI:
         api_url = self.__api_url_params(api_url, kwargs)
 
         return self.__request(api_url)
-    
+
     # ---------- TRENDING ----------#
     @func_args_preprocessing
     def get_search_trending(self, **kwargs):
@@ -475,4 +475,3 @@ class CoinGeckoAPI:
         api_url = self.__api_url_params(api_url, kwargs)
 
         return self.__request(api_url)['data']
-
