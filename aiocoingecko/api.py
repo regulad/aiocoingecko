@@ -42,7 +42,7 @@ class AsyncCoinGeckoAPISession:
                 raise HTTPException(response.reason, status_code=response.status)
 
     # ping
-    async def ping(self) -> str:
+    async def ping(self) -> dict:
         """Check API server status"""
 
         return await self.request("ping")
