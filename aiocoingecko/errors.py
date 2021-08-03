@@ -24,14 +24,7 @@ class HTTPException(LibraryException):
         super().__init__(*args)
 
 
-class RatelimitException(HTTPException):
-    """Raised when getting a 429 response from the API"""
-
-    def __init__(self, *args):
-        super().__init__(*args, status_code=429)
-
-
-class UnknownResponse(HTTPException):
+class UnknownResponse(LibraryException):
     """Raised when getting an unknown JSON response from the API"""
 
     def __init__(self, *args, resp: ClientResponse):
@@ -39,7 +32,7 @@ class UnknownResponse(HTTPException):
 
         self.resp = resp
 
-        super().__init__(*args, status_code=200)
+        super().__init__(*args)
 
 
-__all__ = ["LibraryException", "NoInitialisedSession", "HTTPException", "RatelimitException", "UnknownResponse"]
+__all__ = ["LibraryException", "NoInitialisedSession", "HTTPException", "UnknownResponse"]

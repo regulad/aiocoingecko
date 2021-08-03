@@ -1,4 +1,4 @@
 from .api import *
 from .errors import *
 
-__version__ = "0.1.1"
+__version__ = "1.0.0"
