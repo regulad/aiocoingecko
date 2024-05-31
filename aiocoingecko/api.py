@@ -1,10 +1,8 @@
+from __future__ import annotations
+
 import json
 from functools import wraps
-from typing import Union, Optional, cast, Callable, Coroutine, TypeVar
-try:
-    from typing import ParamSpec
-except ImportError:
-    from typing_extensions import ParamSpec
+from typing import Union, Optional, cast, Callable, Coroutine, TypeVar, Self, ParamSpec
 
 from aiohttp import ClientSession
 
@@ -17,7 +15,6 @@ _C = TypeVar("_C")
 _P = ParamSpec("_P")
 
 
-# I would have made this a static method if I could.
 def _require_session(func: Callable[[_P], Coroutine[_R, _T, _C]]) -> Callable[[_P], Coroutine[_R, _T, _C]]:
     """Annotates that a wrapped coroutine function requires an unclosed ClientSession"""
 
@@ -37,32 +34,63 @@ def _require_session(func: Callable[[_P], Coroutine[_R, _T, _C]]) -> Callable[[_
 
 
 class AsyncCoinGeckoAPISession:
-    _API_URL_BASE = 'https://api.coingecko.com/api/v3/'
-    JSON_TYPES = Optional[Union[str, int, float, list, map, bool]]  # This is kinda stupid.
+    _API_URL_BASE = 'https://api.coingecko.com/api/v3/'  # v3.0.1
+    JSON_TYPES = Optional[Union[str, int, float, list, map, bool, dict]]  # This is kinda stupid.
 
-    def __init__(self, api_base_url: str = _API_URL_BASE, *, client_session: ClientSession = None) -> None:
-        self.api_base_url = api_base_url
-
+    def __init__(
+            self,
+            *,
+            demo_api_key: Optional[str] = None,
+            api_base_url: str = _API_URL_BASE,
+            client_session: ClientSession = None
+    ) -> None:
+        self._api_base_url = api_base_url
+        self._demo_api_key = demo_api_key
         self._client_session = client_session
-        self._client_session_is_passed = self._client_session is not None
+        self._client_session_is_owned = self._client_session is None
+        # we are responsible for managing the lifecycle of the session
 
-    async def __aenter__(self):
-        if not self._client_session_is_passed:
-            self._client_session = ClientSession()
+    async def __aenter__(self) -> Self:
+        await self.start()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if not self._client_session_is_passed:
+    async def start(self) -> None:
+        if self._client_session_is_owned:
+            self._client_session = ClientSession()
+
+    async def close(self) -> None:
+        if self._client_session_is_owned:
             await self._client_session.close()
+            self._client_session = None
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
 
     @_require_session
     async def _request(self, route: str, **kwargs) -> JSON_TYPES:
-        """Used to make interaction with the CoinGecko API.
+        """
+        Used to make interaction with the CoinGecko API.
+        Any additional keyword arguments are used as query parameters to the CoinGecko API.
 
         :argument route The route to make the GET request on.
-        :argument kwargs Query parameters to use during the request."""
+        """
 
-        async with self._client_session.get(self.api_base_url + route, params=kwargs) as response:
+        headers = {
+            "Content-Type": "application/json",
+        }
+
+        params = kwargs.copy()
+
+        if self._demo_api_key:
+            headers["x-cg-demo-api-key"] = self._demo_api_key
+            # params["x_cg_demo_api_key"] = self._demo_api_key
+            # already being passed via the header, this is an alternate way
+
+        async with self._client_session.get(
+                url=self._api_base_url + route,
+                params=params,
+                headers=headers,
+        ) as response:
             if response.ok:
                 try:
                     return await response.json()
